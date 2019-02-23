@@ -62,7 +62,8 @@ uint8_t I2C_DELAY_CYCLES = 2;
 
 #define LOCK_NO_CRC_CHECK 0x80
 
-#define SLOT_0 0x00
+#define KEY_SLOT 0
+#define NONCE_COUNT_SLOT 0x08
 
 uint8_t data_out[40];
 uint8_t data_in[35];
@@ -85,6 +86,147 @@ void setup() {
   PORTC &= ~(1<<TWI_SCL_PIN);
   DDRC &= ~(1<<TWI_SDA_PIN);
   PORTC &= ~(1<<TWI_SDA_PIN);
+}
+
+void readData(uint8_t slot, uint8_t* data) {
+  sha204a_wakeup();
+  sha204a_read(slot << 3, READ_32_BYTES, ZONE_ENCODING_DATA);
+  sha204a_read_buffer();
+  sha204a_sleep();
+
+  for (uint8_t x = 0; x < 32; x++) {
+    data[x] = data_in[x+1];
+  }
+}
+
+void generateRandomNumber(uint8_t* data) {
+  sha204a_wakeup();
+
+  if (soft_i2c_master_start(cryptoauth_address | I2C_WRITE)) {
+    data_out[0] = FUNCTION_COMMAND; // command
+    data_out[1] = 7; // count (included in count)
+    data_out[2] = COMMAND_RANDOM;
+    data_out[3] = 0;
+    data_out[4] = 0;
+    data_out[5] = 0;
+
+    sha204c_calculate_crc(5, &data_out[1], crc); // crc starts at count
+
+    soft_i2c_master_start(cryptoauth_address | I2C_WRITE);
+    for (uint8_t x = 0; x < 6; x++) {
+      soft_i2c_master_write(data_out[x]);    
+    }
+    soft_i2c_master_write(crc[0]); 
+    soft_i2c_master_write(crc[1]);
+    soft_i2c_master_stop();
+
+    delay(50);
+
+    sha204a_read_buffer();
+    sha204a_sleep();
+
+    for (uint8_t x = 0; x < 32; x++) {
+      data[x] = data_in[x+1];
+    }
+  } 
+}
+
+uint32_t getNonceCount(uint8_t* nonceData) {
+  readData(NONCE_COUNT_SLOT, nonceData);
+
+  uint32_t count = nonceData[28];
+  for (int i = 1; i < 4; i++) {
+    count = count << 8;
+    count += nonceData[28+i];
+  }
+
+  return count;
+}
+
+uint32_t incrementNonceCount() {
+  uint8_t nonceData[32];
+  uint32_t count = getNonceCount(nonceData) + 1;
+  nonceData[31] = count & 0xFF;
+  for (int i = 1; i < 4; i++) {
+    count = count >> 8;
+    nonceData[31-i] = count & 0xFF;
+  }
+  writeData(NONCE_COUNT_SLOT, nonceData);
+}
+
+void loadNonce() {
+  uint8_t nonceData[32] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  };
+  uint32_t count = getNonceCount(nonceData);
+  printBase64(nonceData, 32);
+  Serial.println(count);
+  
+  sha204a_wakeup();
+  
+  if (soft_i2c_master_start(cryptoauth_address | I2C_WRITE)) {
+    data_out[0] = FUNCTION_COMMAND; // command
+    data_out[1] = 7 + 32; // count (included in count)
+    data_out[2] = COMMAND_NONCE;
+    data_out[3] = NONCE_PASS_THROUGH;
+    data_out[4] = 0;
+    data_out[5] = 0;
+          
+    for (uint8_t x = 0; x < 32; x++) {
+      data_out[x+6] = nonceData[x];
+    }
+    
+    sha204c_calculate_crc(5 + 32, &data_out[1], crc); // crc starts at count
+
+    soft_i2c_master_start(cryptoauth_address | I2C_WRITE);
+    for (uint8_t x = 0; x < 6 + 32; x++) {
+      soft_i2c_master_write(data_out[x]);    
+    }
+    soft_i2c_master_write(crc[0]); 
+    soft_i2c_master_write(crc[1]);
+    soft_i2c_master_stop();
+
+    delay(60);
+    
+    sha204a_read_buffer();
+    sha204a_idle();
+  }
+
+}
+
+void writeData(uint8_t slot, uint8_t* value) {
+  sha204a_wakeup();
+  
+  if (soft_i2c_master_start(cryptoauth_address | I2C_WRITE)) {
+    data_out[0] = FUNCTION_COMMAND; // command
+    data_out[1] = 7 + 32; // count (included in count)
+    data_out[2] = COMMAND_WRITE;
+    data_out[3] = ZONE_ENCODING_DATA | READ_32_BYTES;
+    data_out[4] = slot << 3;
+    data_out[5] = 0;
+
+    for (uint8_t x = 0; x <= 32; x++) {
+      data_out[x+6] = value[x];
+    }
+    
+    sha204c_calculate_crc(5 + 32, &data_out[1], crc); // crc starts at count
+
+    soft_i2c_master_start(cryptoauth_address | I2C_WRITE);
+    for (uint8_t x = 0; x < 6 + 32; x++) {
+      soft_i2c_master_write(data_out[x]);    
+    }
+    soft_i2c_master_write(crc[0]); 
+    soft_i2c_master_write(crc[1]);
+    soft_i2c_master_stop();
+
+    delay(50);
+
+    sha204a_read_buffer();
+    sha204a_sleep();
+  }
 }
 
 void loop() {
@@ -150,31 +292,9 @@ void loop() {
 
   // Read random number
   else if (strstr(readInput, "rand")) {
-    sha204a_wakeup();
-
-    if (soft_i2c_master_start(cryptoauth_address | I2C_WRITE)) {
-      data_out[0] = FUNCTION_COMMAND; // command
-      data_out[1] = 7; // count (included in count)
-      data_out[2] = COMMAND_RANDOM;
-      data_out[3] = 0;
-      data_out[4] = 0;
-      data_out[5] = 0;
-
-      sha204c_calculate_crc(5, &data_out[1], crc); // crc starts at count
-
-      soft_i2c_master_start(cryptoauth_address | I2C_WRITE);
-      for (uint8_t x = 0; x < 6; x++) {
-        soft_i2c_master_write(data_out[x]);    
-      }
-      soft_i2c_master_write(crc[0]); 
-      soft_i2c_master_write(crc[1]);
-      soft_i2c_master_stop();
-
-      delay(50);
-
-      sha204a_read_buffer();
-      sha204a_sleep();
-    } 
+    uint8_t rand[32];
+    generateRandomNumber(rand);
+    //printBase64(rand, 32);
   }
 
   // Lock configuration
@@ -288,103 +408,25 @@ void loop() {
   }
 
   // Write data key to slot 0
-  else if (strstr(readInput, "loadkey")) {
-    sha204a_wakeup();
-    
-    if (soft_i2c_master_start(cryptoauth_address | I2C_WRITE)) {
-      data_out[0] = FUNCTION_COMMAND; // command
-      data_out[1] = 7 + 32; // count (included in count)
-      data_out[2] = COMMAND_WRITE;
-      data_out[3] = ZONE_ENCODING_DATA | READ_32_BYTES;
-      data_out[4] = SLOT_0;
-      data_out[5] = 0;
-
-
-      uint8_t privkey[32] = {0x22, 0x24, 0x25, 0xB9, 0xA3, 0x6C, 0x44, 0x53, 
-			    0x5F, 0xA1, 0x32, 0x9F, 0x37, 0xCC, 0x6E, 0x49, 
-			    0x45, 0x02, 0x20, 0x9E, 0x5D, 0xDD, 0x02, 0x32,
-			    0xF3, 0xC5, 0x4E, 0x1A, 0x3A, 0x3E, 0x44, 0x55};
-
-       /*   
-      uint8_t privkey[32] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-          
-          */
-      
-      for (uint8_t x = 0; x <= 32; x++) {
-        data_out[x+6] = privkey[x];
-      }
-      
-      sha204c_calculate_crc(5 + 32, &data_out[1], crc); // crc starts at count
-
-      soft_i2c_master_start(cryptoauth_address | I2C_WRITE);
-      for (uint8_t x = 0; x < 6 + 32; x++) {
-        soft_i2c_master_write(data_out[x]);    
-      }
-      soft_i2c_master_write(crc[0]); 
-      soft_i2c_master_write(crc[1]);
-      soft_i2c_master_stop();
-
-      delay(50);
-
-      sha204a_read_buffer();
-      sha204a_sleep();
-
+  else if (strstr(readInput, "loadkeys")) {
+    uint8_t privkey[32];
+    for (int i = 0; i < 16; i++) {
+      generateRandomNumber(privkey);
+      writeData(i, privkey);
+      Serial.println(i);
       printBase64(privkey, 32);
     }
   }
   
-  
   // Nonce to load 32 byte random number
   else if (strstr(readInput, "nonce")) {
-    sha204a_wakeup();
-    
-    uint8_t randomnumber[32] = {0x71, 0xE2, 0x34, 0xF3, 0xDF, 0xD4, 0x51, 0x3B, 
-                                0x6E, 0x83, 0x6D, 0xF4, 0xC7, 0xBD, 0xC2, 0x1B, 
-                                0xD6, 0xE2, 0xF5, 0xA7, 0x92, 0x2C, 0x64, 0xB0, 
-                                0x25, 0x57, 0x15, 0xC1, 0x04, 0x49, 0xA2, 0xD0};
-                                /*
-    uint8_t randomnumber[32] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-                                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-                                */
-    printBase64(randomnumber, 32);
-    
-    if (soft_i2c_master_start(cryptoauth_address | I2C_WRITE)) {
-      data_out[0] = FUNCTION_COMMAND; // command
-      data_out[1] = 7 + 32; // count (included in count)
-      data_out[2] = COMMAND_NONCE;
-      data_out[3] = NONCE_PASS_THROUGH;
-      data_out[4] = 0;
-      data_out[5] = 0;
-            
-      for (uint8_t x = 0; x < 32; x++) {
-        data_out[x+6] = randomnumber[x];
-      }
-      
-      sha204c_calculate_crc(5 + 32, &data_out[1], crc); // crc starts at count
-
-      soft_i2c_master_start(cryptoauth_address | I2C_WRITE);
-      for (uint8_t x = 0; x < 6 + 32; x++) {
-        soft_i2c_master_write(data_out[x]);    
-      }
-      soft_i2c_master_write(crc[0]); 
-      soft_i2c_master_write(crc[1]);
-      soft_i2c_master_stop();
-
-      delay(60);
-      
-      sha204a_read_buffer();
-      sha204a_idle();
-    }
+    loadNonce();
   }
   
-  
-  // HMAC the challenge with the key
-  else if (strstr(readInput, "hmac")) {
+  // MAC the challenge with the key
+  else if (strstr(readInput, "mac")) {
+    loadNonce();
+
     sha204a_wakeup();
     
     if (soft_i2c_master_start(cryptoauth_address | I2C_WRITE)) {
@@ -392,7 +434,7 @@ void loop() {
       data_out[1] = 7; // count (included in count)
       data_out[2] = 0x08;//COMMAND_HMAC;
       data_out[3] = 0x05; //mode, TempKey.SourceFlag, 1 = Input
-      data_out[4] = SLOT_0;
+      data_out[4] = KEY_SLOT;
       data_out[5] = 0;
        
       sha204c_calculate_crc(5, &data_out[1], crc); // crc starts at count
@@ -410,8 +452,14 @@ void loop() {
       sha204a_read_buffer();
       sha204a_idle();
 
-      printBase64(data_in, 32);
+      uint8_t mac[32];
+      for (uint8_t x = 0; x < 32; x++) {
+        mac[x] = data_in[x+1];
+      }
+      printBase64(mac, 32);
     }
+
+    incrementNonceCount();
   }
 }
 
@@ -472,11 +520,11 @@ void sha204a_read_buffer(void) {
   }
 }
 
-void sha204a_read(uint8_t address, uint8_t readCount) {
+void sha204a_read(uint8_t address, uint8_t readCount, uint8_t encodingConfig) {
   data_out[0] = FUNCTION_COMMAND; // command
   data_out[1] = 7; // count (included in count)
   data_out[2] = COMMAND_READ; // read
-  data_out[3] = ZONE_ENCODING_CONFIG | readCount;
+  data_out[3] = encodingConfig | readCount;
   data_out[4] = address;
   data_out[5] = 0;
 
@@ -551,7 +599,7 @@ uint8_t sha204a_print_config(void) {
   uint8_t configBytes[88];
 
   sha204a_wakeup();
-  sha204a_read(0, READ_32_BYTES);
+  sha204a_read(0, READ_32_BYTES, ZONE_ENCODING_CONFIG);
   sha204a_read_buffer();
   sha204a_sleep();
 
@@ -560,7 +608,7 @@ uint8_t sha204a_print_config(void) {
   }
 
   sha204a_wakeup();
-  sha204a_read(0x8, READ_32_BYTES);
+  sha204a_read(0x8, READ_32_BYTES, ZONE_ENCODING_CONFIG);
   sha204a_read_buffer();
   sha204a_sleep();
   
@@ -569,7 +617,7 @@ uint8_t sha204a_print_config(void) {
   }
 
   sha204a_wakeup();
-  sha204a_read(0x10, READ_4_BYTES);
+  sha204a_read(0x10, READ_4_BYTES, ZONE_ENCODING_CONFIG);
   sha204a_read_buffer();
   sha204a_sleep();
   
@@ -578,7 +626,7 @@ uint8_t sha204a_print_config(void) {
   }
 
   sha204a_wakeup();
-  sha204a_read(0x11, READ_4_BYTES);
+  sha204a_read(0x11, READ_4_BYTES, ZONE_ENCODING_CONFIG);
   sha204a_read_buffer();
   sha204a_sleep();
   
@@ -587,7 +635,7 @@ uint8_t sha204a_print_config(void) {
   }
 
   sha204a_wakeup();
-  sha204a_read(0x12, READ_4_BYTES);
+  sha204a_read(0x12, READ_4_BYTES, ZONE_ENCODING_CONFIG);
   sha204a_read_buffer();
   sha204a_sleep();
   
@@ -596,7 +644,7 @@ uint8_t sha204a_print_config(void) {
   }
 
   sha204a_wakeup();
-  sha204a_read(0x13, READ_4_BYTES);
+  sha204a_read(0x13, READ_4_BYTES, ZONE_ENCODING_CONFIG);
   sha204a_read_buffer();
   sha204a_sleep();
   
@@ -605,7 +653,7 @@ uint8_t sha204a_print_config(void) {
   }
 
   sha204a_wakeup();
-  sha204a_read(0x14, READ_4_BYTES);
+  sha204a_read(0x14, READ_4_BYTES, ZONE_ENCODING_CONFIG);
   sha204a_read_buffer();
   sha204a_sleep();
   
@@ -614,7 +662,7 @@ uint8_t sha204a_print_config(void) {
   }
 
   sha204a_wakeup();
-  sha204a_read(0x15, READ_4_BYTES);
+  sha204a_read(0x15, READ_4_BYTES, ZONE_ENCODING_CONFIG);
   sha204a_read_buffer();
   sha204a_sleep();
   
