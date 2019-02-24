@@ -3,9 +3,8 @@ import base64
 import hashlib
 import hmac
 import os
+import struct
 import sys
-
-print sys.argv
 
 def toHex(s):
     lst = []
@@ -19,8 +18,17 @@ def toHex(s):
 
 key = base64.b64decode(os.environ.get("CRYPT_KEY"))
 slot = 0 
-nonce = base64.b64decode(sys.argv[1])
-mac = base64.b64decode(sys.argv[2])
+
+otp = base64.b64decode(sys.argv[1])
+
+mac = otp[0:32]
+nonce = chr(0x00) * 24 + otp[32:40]
+
+count = ord(otp[36])
+for i in range(1,4):
+  count = count << 8
+  count = count + ord(otp[36 + i])
+print count
 
 message = key + \
     nonce + \
