@@ -1,93 +1,8 @@
-/***************************************************
-  This is our GFX example for the Adafruit ILI9341 Breakout and Shield
-  ----> http://www.adafruit.com/products/1651
-
-  Check out the links above for our tutorials and wiring diagrams
-  These displays use SPI to communicate, 4 or 5 pins are required to
-  interface (RST is optional)
-  Adafruit invests time and resources providing this open source code,
-  please support Adafruit and open-source hardware by purchasing
-  products from Adafruit!
-
-  Written by Limor Fried/Ladyada for Adafruit Industries.
-  MIT license, all text above must be included in any redistribution
- ****************************************************/
-
-
 #include "SPI.h"
 #include "Adafruit_GFX.h"
-#include "Adafruit_ILI9341.h"
-
 #include "qrcode.h"
 #include "Wire.h"
-
-// For the Adafruit shield, these are the default.
-#define TFT_DC D3
-#define TFT_CS D4
-
-// Use hardware SPI (on Uno, #13, #12, #11) and the above for CS/DC
-Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
-// If using the breakout, change pins as desired
-//Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_MOSI, TFT_CLK, TFT_RST, TFT_MISO);
-
-  /*
-  Serial.println("ILI9341 Test!"); 
-
-	Serial.println("wake up device.");
-	sha204.simpleWakeup();
-	Serial.println("Sending a MAC Challenge.");
-	Serial.println("Response is:");
-	macChallengeExample();
-	Serial.println("put device to sleep mode.");
-	sha204.simpleSleep();
-	Serial.println();
-	delay(3000);
- 
-  tft.begin();
-
-  // read diagnostics (optional but can help debug problems)
-  uint8_t x = tft.readcommand8(ILI9341_RDMODE);
-  Serial.print("Display Power Mode: 0x"); Serial.println(x, HEX);
-  x = tft.readcommand8(ILI9341_RDMADCTL);
-  Serial.print("MADCTL Mode: 0x"); Serial.println(x, HEX);
-  x = tft.readcommand8(ILI9341_RDPIXFMT);
-  Serial.print("Pixel Format: 0x"); Serial.println(x, HEX);
-  x = tft.readcommand8(ILI9341_RDIMGFMT);
-  Serial.print("Image Format: 0x"); Serial.println(x, HEX);
-  x = tft.readcommand8(ILI9341_RDSELFDIAG);
-  Serial.print("Self Diagnostic: 0x"); Serial.println(x, HEX); 
-  
-  Serial.print(F("Rectangles (filled)      "));
-  Serial.println(testFilledRects(ILI9341_YELLOW, ILI9341_MAGENTA));
-  delay(500);
-
-  Serial.println(F("Done!"));
-
-  delay(1000);
-  pinMode(D2, OUTPUT);
-  delay(3);
-  pinMode(D2, INPUT);
-
-  Serial.println("transmitted");
-
-  Wire.requestFrom(0x64, 1);    // request 6 bytes from slave device #2
-  while(Wire.available() == 0)    // slave may send less than requested
-  {
-    delay(1);
-  }
-  char c = Wire.read();    // receive a byte as character
-  Serial.println(c);         // print the character
-  */
-  
-  /*
-  uint8_t data[1];
-  uint8_t err = getResponse(data, 1);
-  Serial.println(err);
-  if (err == 0) {
-    Serial.println(data[0], HEX);
-  }
-  */
-
+#include <base64.hpp>
 
 #define SHA204A_ADDR 0x64
 
@@ -111,7 +26,6 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 #define CRC_SIZE 2
 
 #define COMMAND_MAC_SIZE 32
-#define OPCODE_MAC 0x08
 
 // zone definitions
 #define SHA204_ZONE_CONFIG              ((uint8_t)  0x00)      //!< Configuration zone
@@ -123,40 +37,182 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 #define MAX_PACKET_SIZE 18
 
 // opcodes
-#define ATSHA204A_OPCODE_MAC 0x08
+#define ATSHA204A_OPCODE_MAC   0x08
+#define ATSHA204A_OPCODE_NONCE 0x16
+#define ATSHA204A_OPCODE_RANDOM 0x1B
 
 // command delays
-#define ATSHA204A_CMD_DELAY_MAC 12
+#define ATSHA204A_CMD_DELAY_MAC 35
+#define ATSHA204A_CMD_DELAY_NONCE 60
+#define ATSHA204A_CMD_DELAY_RANDOM 50
 
 // data sizes
 #define ATSHA204A_DATA_SIZE_MAC 32
 
 // response sizes
 #define ATSHA204A_RESP_SIZE_MAC 32
+#define ATSHA204A_RESP_SIZE_RANDOM 32
+
+#define MCP23017_ADDR 0x20
+
+/*
+#include <Adafruit_ST7735.h>
+#define TFT_CS 16
+#define TFT_RST 9
+#define TFT_DC 17
+#define TFT_SCLK 5
+#define TFT_MOSI 23
+#define COLOR_WHITE ST7735_WHITE
+#define COLOR_BLACK ST7735_BLACK
+#define QR_SCALE 2
+#define QR_MARGIN 14
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+*/
+
+#include "Adafruit_ILI9341.h"
+#define TFT_DC D4
+#define TFT_CS D3
+#define COLOR_WHITE ILI9341_WHITE
+#define COLOR_BLACK ILI9341_BLACK
+#define QR_SCALE 4
+#define QR_MARGIN 22
+Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
+
+#define ATSHA_DEBUG 1
 
 void setup() {
   Wire.begin();
-  Serial.begin(9600);
 
-  // send mac command
-  uint8_t challenge[32] = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-  };
-  uint8_t response[ATSHA204A_RESP_SIZE_MAC];
-	uint8_t err = commandMac(challenge, 0x00, response);
+  #if ATSHA_DEBUG
+  Serial.begin(9600);
+  while (!Serial);
+  #endif
+
+  // initialize MCP23017 (set all pull-ups on)
+  Wire.beginTransmission(MCP23017_ADDR);
+  Wire.write(0x0D);
+  Wire.write(0xFF);
+  Wire.endTransmission();
+
+  // get URL
+  uint8_t code[128];
+  generateCode(code, readDip());
+  char url[200];
+  strcpy(url, "https://passthe.ninja/api/?t=");
+  strcat(url, (char*)code);
+
+  //tft.initR();
+  tft.begin();
+  tft.fillScreen(COLOR_WHITE);
+  drawQr(url);
 }
 
-uint8_t commandMac(uint8_t* challenge, uint8_t keySlot, uint8_t* response) {
+uint8_t readDip() {
+  uint8_t inputs;
+  Wire.beginTransmission(MCP23017_ADDR);
+  Wire.write(0x13);
+  Wire.endTransmission();
+  Wire.requestFrom(MCP23017_ADDR, 1);
+  inputs = ~Wire.read();
+  #if ATSHA_DEBUG
+  Serial.println(inputs, BIN);
+  #endif
+  return inputs;
+}
+
+void generateCode(uint8_t* code, uint8_t dip) {
+  // generate random number for nonce, still using passthrough so we can add
+  // count bytes to the nonce, we could use nonce without passthough, given the
+  // count, but that's more complicated than we need right now
+  uint8_t numIn[32];
+	commandRandom(numIn);
+
+  // send nonce command
+  uint8_t nonceResponse[1];
+	commandNonce(true, numIn, nonceResponse);
+
+  // send mac command
+  uint8_t response[ATSHA204A_RESP_SIZE_MAC];
+	commandMac(0x00, response);
+
+  #if ATSHA_DEBUG
+  for (int i = 0; i < ATSHA204A_RESP_SIZE_MAC; i++) {
+    printHexByte(response[i]);
+  }
+  Serial.println();
+
+  printBase64(32, numIn);
+  printBase64(ATSHA204A_RESP_SIZE_MAC, response);
+  #endif
+
+  unsigned int codeBytes = encode_base64(numIn, 32, code);
+  code[codeBytes++] = '.';
+  encode_base64(response, 32, code + codeBytes);
+
+  #if ATSHA_DEBUG
+  Serial.println((char*)code);
+  #endif
+}
+
+void drawQr(char* code) {
+
+  QRCode qrcode;
+  uint8_t qv = 8;
+  uint8_t scale = QR_SCALE;
+  uint8_t margin = QR_MARGIN;
+
+  uint8_t qrcodeData[qrcode_getBufferSize(qv)];
+  qrcode_initText(&qrcode, qrcodeData, qv, 1, code);
+
+  for (uint8_t y = 0; y < qrcode.size; y++) {
+    for (uint8_t x = 0; x < qrcode.size; x++) {
+      if(qrcode_getModule(&qrcode, x, y)) {
+        tft.fillRect(margin + x*scale, margin + y*scale, scale, scale, COLOR_BLACK);
+      }
+    }
+  }
+}
+
+uint8_t commandRandom(uint8_t* response) {
+  return command(
+    ATSHA204A_OPCODE_RANDOM,
+    0x00,
+    0x0000,
+    0, 0,
+    ATSHA204A_RESP_SIZE_RANDOM, response,
+    ATSHA204A_CMD_DELAY_RANDOM
+  );
+}
+
+uint8_t commandMac(uint8_t keySlot, uint8_t* response) {
   return command(
     ATSHA204A_OPCODE_MAC,
-    0x00,
+    0x05,
     keySlot << 8,
-    ATSHA204A_DATA_SIZE_MAC, challenge,
+    0, 0,
     ATSHA204A_RESP_SIZE_MAC, response,
     ATSHA204A_CMD_DELAY_MAC
+  );
+}
+
+uint8_t commandNonce(boolean passThrough, uint8_t* numIn, uint8_t* response) {
+  // in passthrough mode the response is 0x00, otherwise it is the 32 byte output of the RNG
+  uint8_t responseSize = passThrough ? 1 : 32;
+
+  // in passthorough mode the data is the 32 byte input, otherwise the 20 byte
+  // input is used in the SHA which also includes the output of the RNG
+  uint8_t dataSize = passThrough ? 32 : 20;
+
+  // always update the seed if not in passthrough mode
+  uint8_t mode = passThrough ? 0x03 : 0x00;
+
+  return command(
+    ATSHA204A_OPCODE_NONCE,
+    mode,
+    0x0000,
+    dataSize, numIn,
+    responseSize, response,
+    ATSHA204A_CMD_DELAY_NONCE
   );
 }
 
@@ -214,7 +270,7 @@ uint8_t sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, uint8_t dat
   uint8_t* crc = request + requestSize - CRC_SIZE;
   calculateCrc(crcDataSize, request, crc);
 
-  // DEBUG
+  #if ATSHA_DEBUG
   Serial.print("SENDING: ");
   for (int i = 0; i < requestSize; i++) {
     if (request[i] < 0x10) {
@@ -226,6 +282,7 @@ uint8_t sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, uint8_t dat
     Serial.print(" ");
   }
   Serial.println();
+  #endif
 
   uint8_t bytesWritten = 0;
   while(bytesWritten < requestSize) {
@@ -252,6 +309,12 @@ void printHexByte(uint8_t data) {
   }
   Serial.print(data, HEX);
   Serial.print(" ");
+}
+
+void printBase64(uint8_t len, uint8_t* bytes) {
+    uint8_t base64[64];
+    encode_base64(bytes, len, base64);
+    Serial.println((char*)base64);
 }
 
 uint8_t getResponse(uint8_t dataSize, uint8_t* data) {
@@ -293,11 +356,13 @@ uint8_t getResponse(uint8_t dataSize, uint8_t* data) {
     bytesReceived += newBytes;
   }
 
+  #if ATSHA_DEBUG
   Serial.print("RESPONSE: ");
   for (uint8_t i = 0; i < count; i++) {
     printHexByte(response[i]);
   }
   Serial.println();
+  #endif
 
   // check CRC
   uint8_t crc[2];
@@ -373,27 +438,3 @@ void calculateCrc(uint8_t length, uint8_t *data, uint8_t *crc) {
 void loop(void) {
   delay(1000);
 }
-
-unsigned long testFilledRects(uint16_t color1, uint16_t color2) {
-  tft.fillScreen(ILI9341_WHITE);
-  yield();
-
-  QRCode qrcode;
-  uint8_t qv = 6;
-  uint8_t scale = 5;
-  uint8_t margin = 15;
-
-  uint8_t qrcodeData[qrcode_getBufferSize(qv)];
-  qrcode_initText(&qrcode, qrcodeData, qv, 1, "11111222223333344444555556666677777888889999900000");
-
-  for (uint8_t y = 0; y < qrcode.size; y++) {
-    for (uint8_t x = 0; x < qrcode.size; x++) {
-      if(qrcode_getModule(&qrcode, x, y)) {
-        tft.fillRect(margin + x*scale, margin + y*scale, scale, scale, ILI9341_BLACK);
-      }
-    }
-  }
-  yield();
-  return 0;
-}
-
