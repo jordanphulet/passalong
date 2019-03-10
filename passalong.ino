@@ -95,7 +95,7 @@ void setup() {
   Wire.endTransmission();
 
   // get URL
-  uint8_t code[128];
+  uint8_t code[128]; // more than enough room (44 + 44 + 28 + 2)
   generateCode(code, readDip());
   char url[200];
   strcpy(url, "https://passthe.ninja/api/?t=");
@@ -121,33 +121,40 @@ uint8_t readDip() {
 }
 
 void generateCode(uint8_t* code, uint8_t dip) {
-  // generate random number for nonce, still using passthrough so we can add
-  // count bytes to the nonce, we could use nonce without passthough, given the
-  // count, but that's more complicated than we need right now
-  uint8_t numIn[32];
-	commandRandom(numIn);
+  uint8_t numIn[20] {
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00
+  };
+  numIn[0] = dip;
 
-  // send nonce command
-  uint8_t nonceResponse[1];
-	commandNonce(true, numIn, nonceResponse);
+  // send nonce command, returns random number used to generate nonce
+  uint8_t nonceResponse[32];
+	commandNonce(false, numIn, nonceResponse);
 
   // send mac command
-  uint8_t response[ATSHA204A_RESP_SIZE_MAC];
-	commandMac(0x00, response);
+  uint8_t macResponse[ATSHA204A_RESP_SIZE_MAC];
+	commandMac(0x00, macResponse);
 
   #if ATSHA_DEBUG
-  for (int i = 0; i < ATSHA204A_RESP_SIZE_MAC; i++) {
-    printHexByte(response[i]);
-  }
-  Serial.println();
-
-  printBase64(32, numIn);
-  printBase64(ATSHA204A_RESP_SIZE_MAC, response);
+  Serial.println("NUMIN:");
+  printBase64(20, numIn);
+  Serial.println("RNG:");
+  printBase64(32, nonceResponse);
+  Serial.println("MAC:");
+  printBase64(ATSHA204A_RESP_SIZE_MAC, macResponse);
   #endif
 
-  unsigned int codeBytes = encode_base64(numIn, 32, code);
+  unsigned int codeBytes = 0;
+  // mac
+  codeBytes += encode_base64(macResponse, 32, code + codeBytes);
   code[codeBytes++] = '.';
-  encode_base64(response, 32, code + codeBytes);
+  // rng
+  codeBytes += encode_base64(nonceResponse, 32, code + codeBytes);
+  code[codeBytes++] = '.';
+  // numin
+  codeBytes += encode_base64(numIn, 20, code + codeBytes);
 
   #if ATSHA_DEBUG
   Serial.println((char*)code);
@@ -185,9 +192,21 @@ uint8_t commandRandom(uint8_t* response) {
 }
 
 uint8_t commandMac(uint8_t keySlot, uint8_t* response) {
+  // mode
+  //   7: 0
+  //   6: include SN bits
+  //   5: include 64 OTP bits
+  //   4: include 88 OTP bits (overrides 6 if set)
+  //   3: 0
+  //   2: if 0 or 1 are set, must match TempKey.SourceFlag (0=random, 1=input)
+  //   1: 1st 32 bytes from from TempKey, otherwise from data slot
+  //   0: 2nd 32 bytes from from TempKey, otherwise from challenge parameter 
+
+  //uint8_t mode = 0x05;
+  uint8_t mode = 0b00000001; // no extra SN/OTP bits, key from slot, not using challenge param, temp key random
   return command(
     ATSHA204A_OPCODE_MAC,
-    0x05,
+    mode,
     keySlot << 8,
     0, 0,
     ATSHA204A_RESP_SIZE_MAC, response,
