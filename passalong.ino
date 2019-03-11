@@ -32,18 +32,24 @@
 #define SHA204_ZONE_OTP                 ((uint8_t)  0x01)      //!< OTP (One Time Programming) zone
 #define SHA204_ZONE_DATA                ((uint8_t)  0x02)      //!< Data zone
 
-#define ADDRESS_SN03 0	// SN[0:3] are bytes 0->3 of configuration zone
+#define ADDRESS_SN03 0  // SN[0:3] are bytes 0->3 of configuration zone
 
 #define MAX_PACKET_SIZE 18
 
+#define ATSHA204A_ZONE_ENCODING_CONFIG 0
+#define ATSHA204A_ZONE_ENCODING_OTP    2
+#define ATSHA204A_ZONE_ENCODING_DATA   3
+
 // opcodes
-#define ATSHA204A_OPCODE_MAC   0x08
-#define ATSHA204A_OPCODE_NONCE 0x16
+#define ATSHA204A_OPCODE_READ   0x02
+#define ATSHA204A_OPCODE_MAC    0x08
+#define ATSHA204A_OPCODE_NONCE  0x16
 #define ATSHA204A_OPCODE_RANDOM 0x1B
 
 // command delays
-#define ATSHA204A_CMD_DELAY_MAC 35
-#define ATSHA204A_CMD_DELAY_NONCE 60
+#define ATSHA204A_CMD_DELAY_READ   4
+#define ATSHA204A_CMD_DELAY_MAC    35
+#define ATSHA204A_CMD_DELAY_NONCE  60
 #define ATSHA204A_CMD_DELAY_RANDOM 50
 
 // data sizes
@@ -78,7 +84,7 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RS
 #define QR_MARGIN 22
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
-#define ATSHA_DEBUG 1
+#define ATSHA_DEBUG 0
 
 void setup() {
   Wire.begin();
@@ -120,22 +126,37 @@ uint8_t readDip() {
   return inputs;
 }
 
+void readHistory(uint8_t* history) {
+  for( int i = 0; i < 10; i++) {
+    history[i] = 0x11;
+  }
+}
+
 void generateCode(uint8_t* code, uint8_t dip) {
-  uint8_t numIn[20] {
-    0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00
-  };
+  uint8_t numIn[20];
+
+  // wake the device
+  wake();
+
+  // set first byte of numIn to value of DIP
   numIn[0] = dip;
+
+  // read the serial number into bytes 1-9 of numIn
+  readSerialNumber(numIn + 1);
+
+  // read the history bytes in to bytes 10-19 of numIn
+  readHistory(numIn + 10);
 
   // send nonce command, returns random number used to generate nonce
   uint8_t nonceResponse[32];
-	commandNonce(false, numIn, nonceResponse);
+  commandNonce(false, numIn, nonceResponse);
 
   // send mac command
   uint8_t macResponse[ATSHA204A_RESP_SIZE_MAC];
-	commandMac(0x00, macResponse);
+  commandMac(0x00, macResponse);
+
+  // put the device to sleep
+  sleep();
 
   #if ATSHA_DEBUG
   Serial.println("NUMIN:");
@@ -180,6 +201,22 @@ void drawQr(char* code) {
   }
 }
 
+void readSerialNumber(uint8_t* serialNumber) {
+  // serial number is a subset of the first 32 bytes of the config
+  uint8_t readResponse[32];
+  commandRead(ATSHA204A_ZONE_ENCODING_CONFIG, 0, readResponse);
+
+  uint8_t offset = 0;
+  // first word
+  memcpy(serialNumber, readResponse, 4);
+
+  // third word
+  memcpy(serialNumber + 4, readResponse + 8, 4);
+
+  // first byte of fourth word
+  serialNumber[8] = readResponse[12];
+}
+
 uint8_t commandRandom(uint8_t* response) {
   return command(
     ATSHA204A_OPCODE_RANDOM,
@@ -188,6 +225,24 @@ uint8_t commandRandom(uint8_t* response) {
     0, 0,
     ATSHA204A_RESP_SIZE_RANDOM, response,
     ATSHA204A_CMD_DELAY_RANDOM
+  );
+}
+
+uint8_t commandRead(uint8_t zoneEncoding, uint16_t slot, uint8_t* response) {
+  // only reading 32 bytes
+  uint8_t zone = 0b10000000;
+  // set zone encoding bits
+  zone |= zoneEncoding;
+
+  uint16_t address = (slot << 8) * 4;
+
+  return command(
+    ATSHA204A_OPCODE_READ,
+    zone,
+    address,
+    0, 0,
+    32, response,
+    ATSHA204A_CMD_DELAY_READ
   );
 }
 
@@ -243,14 +298,8 @@ uint8_t command(
   uint8_t  responseSize, uint8_t* response,
   uint8_t  cmdDelay
 ) {
-  // wake
-  uint8_t err = wake();
-  if (err != 0) {
-    return ERR_WAKE_FAILED;
-  }
-
   // send command
-	err = sendCommand(opcode, param1, param2, dataSize, data);
+  uint8_t err = sendCommand(opcode, param1, param2, dataSize, data);
   if (err != 0) {
     return err;
   }
@@ -292,13 +341,7 @@ uint8_t sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, uint8_t dat
   #if ATSHA_DEBUG
   Serial.print("SENDING: ");
   for (int i = 0; i < requestSize; i++) {
-    if (request[i] < 0x10) {
-      Serial.print("0x0");
-    } else {
-      Serial.print("0x");
-    }
-    Serial.print(request[i], HEX);
-    Serial.print(" ");
+    printHexByte(request[i]);
   }
   Serial.println();
   #endif
@@ -430,28 +473,40 @@ uint8_t wake() {
   return ERR_OK;
 }
 
+uint8_t sleep() {
+  Wire.beginTransmission(SHA204A_ADDR);
+  Wire.write(0xCC);
+  uint8_t err = Wire.endTransmission();
+  if (err != 0) {
+    return ERR_TRANSMISSION_FAILED;
+  }
+
+  // OK
+  return ERR_OK;
+}
+
 void calculateCrc(uint8_t length, uint8_t *data, uint8_t *crc) {
-	uint8_t counter;
-	uint16_t crc_register = 0;
-	uint16_t polynom = 0x8005;
-	uint8_t shift_register;
-	uint8_t data_bit, crc_bit;
+  uint8_t counter;
+  uint16_t crc_register = 0;
+  uint16_t polynom = 0x8005;
+  uint8_t shift_register;
+  uint8_t data_bit, crc_bit;
 
-	for (counter = 0; counter < length; counter++) {
-		for (shift_register = 0x01; shift_register > 0x00; shift_register <<= 1) {
-			data_bit = (data[counter] & shift_register) ? 1 : 0;
-			crc_bit = crc_register >> 15;
+  for (counter = 0; counter < length; counter++) {
+    for (shift_register = 0x01; shift_register > 0x00; shift_register <<= 1) {
+      data_bit = (data[counter] & shift_register) ? 1 : 0;
+      crc_bit = crc_register >> 15;
 
-			// Shift CRC to the left by 1.
-			crc_register <<= 1;
+      // Shift CRC to the left by 1.
+      crc_register <<= 1;
 
-			if ((data_bit ^ crc_bit) != 0)
-				crc_register ^= polynom;
-		}
-	}
+      if ((data_bit ^ crc_bit) != 0)
+        crc_register ^= polynom;
+    }
+  }
 
-	crc[0] = (uint8_t) (crc_register & 0x00FF);
-	crc[1] = (uint8_t) (crc_register >> 8);
+  crc[0] = (uint8_t) (crc_register & 0x00FF);
+  crc[1] = (uint8_t) (crc_register >> 8);
 }
 
 void loop(void) {
