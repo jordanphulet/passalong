@@ -84,7 +84,7 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RS
 #define QR_MARGIN 22
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
-#define ATSHA_DEBUG 0
+#define ATSHA_DEBUG 1
 
 void setup() {
   Wire.begin();
@@ -103,14 +103,35 @@ void setup() {
   // get URL
   uint8_t code[128]; // more than enough room (44 + 44 + 28 + 2)
   generateCode(code, readDip());
+  encodeParams((char*)code);
   char url[200];
-  strcpy(url, "https://passthe.ninja/api/?t=");
+  strcpy(url, "https://passthe.ninja/?t=");
   strcat(url, (char*)code);
+
+  #if ATSHA_DEBUG
+  Serial.println(url);
+  #endif
 
   //tft.initR();
   tft.begin();
   tft.fillScreen(COLOR_WHITE);
   drawQr(url);
+}
+
+void encodeParams(char* params) {
+  uint8_t i = 0;
+  while (params[i] != 0) {
+    if (params[i] == ' ') {
+      params[i] = '~';
+    }
+    else if (params[i] == '+') {
+      params[i] = '_';
+    }
+    else if (params[i] == '=') {
+      params[i] = '-';
+    }
+    i++;
+  }
 }
 
 uint8_t readDip() {
@@ -176,10 +197,6 @@ void generateCode(uint8_t* code, uint8_t dip) {
   code[codeBytes++] = '.';
   // numin
   codeBytes += encode_base64(numIn, 20, code + codeBytes);
-
-  #if ATSHA_DEBUG
-  Serial.println((char*)code);
-  #endif
 }
 
 void drawQr(char* code) {
