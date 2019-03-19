@@ -37,18 +37,20 @@
 #define MAX_PACKET_SIZE 18
 
 #define ATSHA204A_ZONE_ENCODING_CONFIG 0
-#define ATSHA204A_ZONE_ENCODING_OTP    2
-#define ATSHA204A_ZONE_ENCODING_DATA   3
+#define ATSHA204A_ZONE_ENCODING_OTP    1
+#define ATSHA204A_ZONE_ENCODING_DATA   2
 
 // opcodes
 #define ATSHA204A_OPCODE_READ   0x02
 #define ATSHA204A_OPCODE_MAC    0x08
+#define ATSHA204A_OPCODE_WRITE  0x12
 #define ATSHA204A_OPCODE_NONCE  0x16
 #define ATSHA204A_OPCODE_RANDOM 0x1B
 
 // command delays
 #define ATSHA204A_CMD_DELAY_READ   4
 #define ATSHA204A_CMD_DELAY_MAC    35
+#define ATSHA204A_CMD_DELAY_WRITE  42
 #define ATSHA204A_CMD_DELAY_NONCE  60
 #define ATSHA204A_CMD_DELAY_RANDOM 50
 
@@ -93,6 +95,22 @@ void setup() {
   Serial.begin(9600);
   while (!Serial);
   #endif
+
+  /*
+  // TESTING WRITE AND READ
+
+  wake();
+  uint8_t toWrite[32] = {
+    0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
+    0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
+    0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
+    0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13
+  };
+  uint8_t readResponse[32];
+  commandWrite(ATSHA204A_ZONE_ENCODING_DATA, 8, toWrite);
+  commandRead(ATSHA204A_ZONE_ENCODING_DATA, 8, readResponse);
+  sleep();
+  */
 
   // initialize MCP23017 (set all pull-ups on)
   Wire.beginTransmission(MCP23017_ADDR);
@@ -245,13 +263,13 @@ uint8_t commandRandom(uint8_t* response) {
   );
 }
 
-uint8_t commandRead(uint8_t zoneEncoding, uint16_t slot, uint8_t* response) {
+uint8_t commandRead(uint8_t zoneEncoding, uint8_t slot, uint8_t* response) {
   // only reading 32 bytes
   uint8_t zone = 0b10000000;
   // set zone encoding bits
   zone |= zoneEncoding;
 
-  uint16_t address = (slot << 8) * 4;
+  uint16_t address = slot << 11;
 
   return command(
     ATSHA204A_OPCODE_READ,
@@ -260,6 +278,26 @@ uint8_t commandRead(uint8_t zoneEncoding, uint16_t slot, uint8_t* response) {
     0, 0,
     32, response,
     ATSHA204A_CMD_DELAY_READ
+  );
+}
+
+uint8_t commandWrite(uint8_t zoneEncoding, uint8_t slot, uint8_t* data) {
+  // only writing 32 bytes in the clear
+  uint8_t zone = 0b10000000;
+  // set zone encoding bits
+  zone |= zoneEncoding;
+
+  uint16_t address = slot << 11;
+
+  uint8_t response;
+
+  return command(
+    ATSHA204A_OPCODE_WRITE,
+    zone,
+    address,
+    32, data,
+    1, &response,
+    ATSHA204A_CMD_DELAY_WRITE
   );
 }
 
@@ -373,6 +411,9 @@ uint8_t sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, uint8_t dat
     bytesWritten += Wire.write(request + bytesWritten, bytesToWrite);
     uint8_t err = Wire.endTransmission();
     if (err != 0) {
+      // TODO: why is this happening sometimes when calling write comand?
+      Serial.println("NACK ERROR!");
+      Serial.println(err);
       return ERR_NACK;
     }
   }
@@ -383,7 +424,7 @@ uint8_t sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, uint8_t dat
 
 void printHexByte(uint8_t data) {
   Serial.print("0x");
-  if (data < 0x0F) {
+  if (data < 0x10) {
     Serial.print("0");
   }
   Serial.print(data, HEX);
@@ -396,24 +437,46 @@ void printBase64(uint8_t len, uint8_t* bytes) {
     Serial.println((char*)base64);
 }
 
+bool wireWait() {
+  uint8_t retries = 3;
+  while (!Wire.available()) {
+    retries--;
+    if (retries < 0) {
+      return false;
+    }
+    delay(20);
+  }
+  return true;
+}
+
 uint8_t getResponse(uint8_t dataSize, uint8_t* data) {
   // trivial case
   if (dataSize < 1) {
     return ERR_OK;
   }
 
-  // send transmit flag
-  delay(3);
-  Wire.beginTransmission(SHA204A_ADDR);
-  Wire.write(0x88);
-  uint8_t err = Wire.endTransmission();
-  if (err != 0) {
-    return ERR_TRANSMISSION_FAILED;
+  uint8_t retries = 5;
+  while(true) {
+    retries--;
+    // send transmit flag
+    delay(3);
+    Wire.beginTransmission(SHA204A_ADDR);
+    Wire.write(0x88);
+    uint8_t err = Wire.endTransmission();
+    if (err == 0) {
+      break;
+    }
+    else if (retries < 0) {
+      Serial.println("RESPONSE TRANSMISSION FAILED ERROR!");
+      Serial.println(err);
+      return ERR_TRANSMISSION_FAILED;
+    }
   }
 
   // get count
   Wire.requestFrom(SHA204A_ADDR, 1);
-  if (!Wire.available()) {
+  if (!wireWait()) {
+    Serial.println("COUNT NO BYTES AVAILABLE ERROR!");
     return ERR_NO_BYTES_AVAILABLE;
   }
 
@@ -426,7 +489,8 @@ uint8_t getResponse(uint8_t dataSize, uint8_t* data) {
   uint8_t bytesReceived = 1;
   while (bytesReceived < count) {
     uint8_t newBytes = Wire.requestFrom(SHA204A_ADDR, count - bytesReceived);
-    if (!Wire.available()) {
+    if (!wireWait()) {
+      Serial.println("RESPONSE NO BYTES AVAILABLE ERROR!");
       return ERR_NO_BYTES_AVAILABLE;
     }
     for (int i = 0; i < newBytes; i++) {
@@ -447,7 +511,7 @@ uint8_t getResponse(uint8_t dataSize, uint8_t* data) {
   uint8_t crc[2];
   calculateCrc(count - 2, response, crc);
   if (crc[0] != response[count - 2] || crc[1] != response[count-1]) {
-    Serial.println("BAD CRC!");
+    Serial.println("BAD CRC ERROR!");
     return ERR_BAD_CRC;
   }
 
@@ -476,6 +540,7 @@ uint8_t wake() {
   Wire.write(0x88);
   uint8_t err = Wire.endTransmission();
   if (err != 0) {
+    Serial.println("WAKE END TRANSMISSION FAILED ERROR!");
     return ERR_TRANSMISSION_FAILED;
   }
 
@@ -495,6 +560,7 @@ uint8_t sleep() {
   Wire.write(0xCC);
   uint8_t err = Wire.endTransmission();
   if (err != 0) {
+    Serial.println("SLEEP END TRANSMISSION FAILED ERROR!");
     return ERR_TRANSMISSION_FAILED;
   }
 
