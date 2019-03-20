@@ -105,7 +105,7 @@ void setup() {
   Wire.endTransmission();
 
   // get URL
-  uint8_t code[128]; // more than enough room (44 + 44 + 28 + 2)
+  uint8_t code[150]; // more than enough room (44 + 44 + 28 + 14 + 2)
   generateCode(code, readDip());
   encodeParams((char*)code);
   char url[200];
@@ -167,9 +167,9 @@ void readHistory(uint8_t* history) {
   uint8_t readResponse[32];
   commandRead(ATSHA204A_ZONE_ENCODING_DATA, HISTORY_SLOT, readResponse);
 
-  // find the start index (0x00) and get the next 10 bytes
+  // find the start index (0x00) and get the next 19 bytes
   uint8_t startIndex = getStartIndex(readResponse);
-  for (uint8_t i = 0; i < 10; i++) {
+  for (uint8_t i = 0; i < 19; i++) {
     history[i] = readResponse[(startIndex + i) % 32];
   }
 }
@@ -210,11 +210,8 @@ void generateCode(uint8_t* code, uint8_t dip) {
   // set first byte of numIn to value of DIP
   numIn[0] = dip;
 
-  // read the serial number into bytes 1-9 of numIn
-  readSerialNumber(numIn + 1);
-
-  // read the history bytes in to bytes 10-19 of numIn
-  readHistory(numIn + 10);
+  // read the history bytes in to bytes 1-19 of numIn
+  readHistory(numIn + 1);
 
   // send nonce command, returns random number used to generate nonce
   uint8_t nonceResponse[32];
@@ -224,6 +221,7 @@ void generateCode(uint8_t* code, uint8_t dip) {
   uint8_t macResponse[ATSHA204A_RESP_SIZE_MAC];
   commandMac(0x00, macResponse);
 
+  // update history with new mac
   updateHistory(macResponse);
 
   // put the device to sleep
@@ -247,6 +245,11 @@ void generateCode(uint8_t* code, uint8_t dip) {
   code[codeBytes++] = '.';
   // numin
   codeBytes += encode_base64(numIn, 20, code + codeBytes);
+  code[codeBytes++] = '.';
+  // serial
+  uint8_t serial[9];
+  readSerialNumber(serial);
+  codeBytes += encode_base64(serial, 9, code + codeBytes);
 }
 
 void drawQr(char* code) {
@@ -341,8 +344,7 @@ uint8_t commandMac(uint8_t keySlot, uint8_t* response) {
   //   1: 1st 32 bytes from from TempKey, otherwise from data slot
   //   0: 2nd 32 bytes from from TempKey, otherwise from challenge parameter 
 
-  //uint8_t mode = 0x05;
-  uint8_t mode = 0b00000001; // no extra SN/OTP bits, key from slot, not using challenge param, temp key random
+  uint8_t mode = 0b01000001; // include SN, no OTP bits, key from slot, not using challenge param, temp key random
   return command(
     ATSHA204A_OPCODE_MAC,
     mode,
