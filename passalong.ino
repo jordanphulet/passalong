@@ -61,6 +61,8 @@
 #define ATSHA204A_RESP_SIZE_MAC 32
 #define ATSHA204A_RESP_SIZE_RANDOM 32
 
+#define HISTORY_SLOT 8
+
 #define MCP23017_ADDR 0x20
 
 /*
@@ -92,25 +94,9 @@ void setup() {
   Wire.begin();
 
   #if ATSHA_DEBUG
-  Serial.begin(9600);
+  Serial.begin(74880);
   while (!Serial);
   #endif
-
-  /*
-  // TESTING WRITE AND READ
-
-  wake();
-  uint8_t toWrite[32] = {
-    0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
-    0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
-    0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13,
-    0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13, 0x13
-  };
-  uint8_t readResponse[32];
-  commandWrite(ATSHA204A_ZONE_ENCODING_DATA, 8, toWrite);
-  commandRead(ATSHA204A_ZONE_ENCODING_DATA, 8, readResponse);
-  sleep();
-  */
 
   // initialize MCP23017 (set all pull-ups on)
   Wire.beginTransmission(MCP23017_ADDR);
@@ -165,10 +151,54 @@ uint8_t readDip() {
   return inputs;
 }
 
-void readHistory(uint8_t* history) {
-  for( int i = 0; i < 10; i++) {
-    history[i] = 0x11;
+uint8_t getStartIndex(uint8_t* history) {
+  uint8_t startIndex = 0;
+  for (uint8_t i = 0; i < 32; i++) {
+    if (history[i] == 0x00) {
+      startIndex = (i + 1) % 32;
+      break;
+    }
   }
+  return startIndex;
+}
+
+void readHistory(uint8_t* history) {
+  // get all 32 history bytes
+  uint8_t readResponse[32];
+  commandRead(ATSHA204A_ZONE_ENCODING_DATA, HISTORY_SLOT, readResponse);
+
+  // find the start index (0x00) and get the next 10 bytes
+  uint8_t startIndex = getStartIndex(readResponse);
+  for (uint8_t i = 0; i < 10; i++) {
+    history[i] = readResponse[(startIndex + i) % 32];
+  }
+}
+
+void updateHistory(uint8_t* mac) {
+  // xor mac bytes to get new history byte
+  uint8_t newHistoryByte = mac[0];
+  for (uint8_t i = 1; i < 32; i++) {
+    newHistoryByte ^= mac[i];
+  }
+
+  // 0x00 isn't allowed since it is the delimeter
+  if (newHistoryByte == 0x00) {
+    newHistoryByte = 0x01;
+  }
+
+  // get the current history
+  uint8_t readResponse[32];
+  commandRead(ATSHA204A_ZONE_ENCODING_DATA, HISTORY_SLOT, readResponse);
+
+  // find the start index (0x00)
+  uint8_t startIndex = getStartIndex(readResponse);
+
+  // replace byte before start with new history byte and byte before that to 0x00
+  readResponse[(startIndex + 31) % 32] = newHistoryByte;
+  readResponse[(startIndex + 30) % 32] = 0x00;
+
+  // write updated history
+  commandWrite(ATSHA204A_ZONE_ENCODING_DATA, HISTORY_SLOT, readResponse);
 }
 
 void generateCode(uint8_t* code, uint8_t dip) {
@@ -194,6 +224,8 @@ void generateCode(uint8_t* code, uint8_t dip) {
   uint8_t macResponse[ATSHA204A_RESP_SIZE_MAC];
   commandMac(0x00, macResponse);
 
+  updateHistory(macResponse);
+
   // put the device to sleep
   sleep();
 
@@ -218,7 +250,6 @@ void generateCode(uint8_t* code, uint8_t dip) {
 }
 
 void drawQr(char* code) {
-
   QRCode qrcode;
   uint8_t qv = 8;
   uint8_t scale = QR_SCALE;
@@ -288,9 +319,7 @@ uint8_t commandWrite(uint8_t zoneEncoding, uint8_t slot, uint8_t* data) {
   zone |= zoneEncoding;
 
   uint16_t address = slot << 11;
-
   uint8_t response;
-
   return command(
     ATSHA204A_OPCODE_WRITE,
     zone,
@@ -411,9 +440,7 @@ uint8_t sendCommand(uint8_t opcode, uint8_t param1, uint16_t param2, uint8_t dat
     bytesWritten += Wire.write(request + bytesWritten, bytesToWrite);
     uint8_t err = Wire.endTransmission();
     if (err != 0) {
-      // TODO: why is this happening sometimes when calling write comand?
       Serial.println("NACK ERROR!");
-      Serial.println(err);
       return ERR_NACK;
     }
   }
