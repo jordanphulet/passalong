@@ -85,7 +85,7 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RS
 #define COLOR_WHITE ILI9341_WHITE
 #define COLOR_BLACK ILI9341_BLACK
 #define QR_SCALE 4
-#define QR_MARGIN 22
+#define QR_MARGIN 15
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 
 #define ATSHA_DEBUG 1
@@ -254,7 +254,7 @@ void generateCode(uint8_t* code, uint8_t dip) {
 
 void drawQr(char* code) {
   QRCode qrcode;
-  uint8_t qv = 8;
+  uint8_t qv = 9;
   uint8_t scale = QR_SCALE;
   uint8_t margin = QR_MARGIN;
 
