@@ -65,20 +65,20 @@
 
 #define MCP23017_ADDR 0x20
 
-/*
 #include <Adafruit_ST7735.h>
-#define TFT_CS 16
-#define TFT_RST 9
-#define TFT_DC 17
-#define TFT_SCLK 5
-#define TFT_MOSI 23
+#define TFT_CS D3
+#define TFT_RST D6
+#define TFT_DC D4
+#define TFT_SCLK D5
+#define TFT_MOSI D7
+#define TFT_BACKLIGHT D8
 #define COLOR_WHITE ST7735_WHITE
 #define COLOR_BLACK ST7735_BLACK
 #define QR_SCALE 2
-#define QR_MARGIN 14
+#define QR_MARGIN 11
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
-*/
 
+/*
 #include "Adafruit_ILI9341.h"
 #define TFT_DC D4
 #define TFT_CS D3
@@ -87,6 +87,7 @@ Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RS
 #define QR_SCALE 4
 #define QR_MARGIN 15
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
+*/
 
 #define ATSHA_DEBUG 1
 
@@ -116,8 +117,11 @@ void setup() {
   Serial.println(url);
   #endif
 
-  //tft.initR();
-  tft.begin();
+  tft.initR(INITR_BLACKTAB);
+  pinMode(TFT_BACKLIGHT, OUTPUT);
+  digitalWrite(TFT_BACKLIGHT, HIGH);
+  
+  //tft.begin();
   tft.fillScreen(COLOR_WHITE);
   drawQr(url);
 }
