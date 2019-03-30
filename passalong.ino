@@ -67,7 +67,7 @@
 
 #include <Adafruit_ST7735.h>
 #define TFT_CS D3
-#define TFT_RST D6
+#define TFT_RST -1
 #define TFT_DC D4
 #define TFT_SCLK D5
 #define TFT_MOSI D7
@@ -76,7 +76,9 @@
 #define COLOR_BLACK ST7735_BLACK
 #define QR_SCALE 2
 #define QR_MARGIN 11
-Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+//Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
 
 /*
 #include "Adafruit_ILI9341.h"
@@ -110,7 +112,8 @@ void setup() {
   generateCode(code, readDip());
   encodeParams((char*)code);
   char url[200];
-  strcpy(url, "https://passthe.ninja/?t=");
+  //strcpy(url, "https://passthe.ninja/t/");
+  strcpy(url, "http://192.168.1.4:3000/t/");
   strcat(url, (char*)code);
 
   #if ATSHA_DEBUG
@@ -118,12 +121,14 @@ void setup() {
   #endif
 
   tft.initR(INITR_BLACKTAB);
-  pinMode(TFT_BACKLIGHT, OUTPUT);
-  digitalWrite(TFT_BACKLIGHT, HIGH);
+
   
   //tft.begin();
   tft.fillScreen(COLOR_WHITE);
   drawQr(url);
+
+  pinMode(TFT_BACKLIGHT, OUTPUT);
+  digitalWrite(TFT_BACKLIGHT, HIGH);
 }
 
 void encodeParams(char* params) {
@@ -167,15 +172,28 @@ uint8_t getStartIndex(uint8_t* history) {
 }
 
 void readHistory(uint8_t* history) {
+  /*
+  uint8_t hist[32] = {
+    0x00, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
+    0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22
+  };
+  commandWrite(ATSHA204A_ZONE_ENCODING_DATA, HISTORY_SLOT, hist);
+  */
+
   // get all 32 history bytes
   uint8_t readResponse[32];
   commandRead(ATSHA204A_ZONE_ENCODING_DATA, HISTORY_SLOT, readResponse);
 
   // find the start index (0x00) and get the next 19 bytes
+  Serial.println("HISTORY:");
   uint8_t startIndex = getStartIndex(readResponse);
   for (uint8_t i = 0; i < 19; i++) {
     history[i] = readResponse[(startIndex + i) % 32];
+    printHexByte(history[i]);
   }
+  Serial.println();
 }
 
 void updateHistory(uint8_t* mac) {
@@ -268,7 +286,7 @@ void drawQr(char* code) {
   for (uint8_t y = 0; y < qrcode.size; y++) {
     for (uint8_t x = 0; x < qrcode.size; x++) {
       if(qrcode_getModule(&qrcode, x, y)) {
-        tft.fillRect(margin + x*scale, margin + y*scale, scale, scale, COLOR_BLACK);
+        tft.fillRect(margin + x*scale, 17 + margin + y*scale, scale, scale, COLOR_BLACK);
       }
     }
   }
